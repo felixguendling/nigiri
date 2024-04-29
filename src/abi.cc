@@ -177,7 +177,7 @@ nigiri_location_t* nigiri_get_location(const nigiri_timetable_t* t,
   auto location = new nigiri_location_t;
   auto l = t->tt->locations_.get(lidx);
   location->name = l.name_.data();
-  location->name_len = static_cast<uint32_t>(l.name_.length());
+  location->name_len = static_cast<uint32_t>(l.name_.size());
   location->id = l.id_.data();
   location->id_len = static_cast<uint32_t>(l.id_.length());
   location->lat = l.pos_.lat_;
