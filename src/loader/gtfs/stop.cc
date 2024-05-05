@@ -82,7 +82,7 @@ struct stop {
   }
 
   std::string_view id_;
-  cista::raw::string name_;
+  cista::raw::generic_string name_;
   std::string_view platform_code_;
   geo::latlng coord_;
   std::string_view timezone_;
@@ -176,7 +176,7 @@ locations_map read_stops(source_idx_t const src,
 
   struct csv_stop {
     utl::csv_col<utl::cstr, UTL_NAME("stop_id")> id_;
-    utl::csv_col<cista::raw::string, UTL_NAME("stop_name")> name_;
+    utl::csv_col<cista::raw::generic_string, UTL_NAME("stop_name")> name_;
     utl::csv_col<utl::cstr, UTL_NAME("stop_timezone")> timezone_;
     utl::csv_col<utl::cstr, UTL_NAME("parent_station")> parent_station_;
     utl::csv_col<utl::cstr, UTL_NAME("platform_code")> platform_code_;
@@ -191,7 +191,7 @@ locations_map read_stops(source_idx_t const src,
                                        progress_tracker->update_fn())}  //
       | utl::csv<csv_stop>()  //
       |
-      utl::for_each([&](csv_stop const& s) {
+      utl::for_each([&](csv_stop& s) {
         auto const new_stop = utl::get_or_create(stops, s.id_->view(), [&]() {
                                 return std::make_unique<stop>();
                               }).get();
