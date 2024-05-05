@@ -18,6 +18,15 @@ struct location {
   friend std::ostream& operator<<(std::ostream&, location const&);
   location(timetable const&, location_idx_t);
   location(std::string_view id,
+           cista::raw::generic_string name,
+           geo::latlng pos,
+           source_idx_t,
+           location_type,
+           location_idx_t parent,
+           timezone_idx_t,
+           duration_t transfer_time,
+           it_range<vector<location_idx_t>::const_iterator> equivalences);
+  location(std::string_view id,
            std::string_view name,
            geo::latlng pos,
            source_idx_t,
@@ -26,9 +35,10 @@ struct location {
            timezone_idx_t,
            duration_t transfer_time,
            it_range<vector<location_idx_t>::const_iterator> equivalences);
+
   location_idx_t l_{location_idx_t::invalid()};
   std::string_view id_;
-  std::string_view name_;
+  cista::raw::generic_string name_;
   geo::latlng pos_;
   source_idx_t src_;
   location_type type_;

@@ -213,7 +213,7 @@ locations_map read_stops(source_idx_t const src,
           new_stop->parent_ = parent;
         }
 
-        equal_names[new_stop->name_].emplace_back(new_stop);
+        equal_names[new_stop->name_.view()].emplace_back(new_stop);
       });
 
   auto const stop_vec =
@@ -247,7 +247,11 @@ locations_map read_stops(source_idx_t const src,
     locations.emplace(
         std::string{id},
         s->location_ = tt.locations_.register_location(location{
-            id, is_track ? s->platform_code_ : s->name_.view(), s->coord_, src,
+            id,
+            is_track ? cista::raw::generic_string(
+                           s->platform_code_, cista::raw::string::non_owning)
+                     : s->name_,
+            s->coord_, src,
             is_track ? location_type::kTrack : location_type::kStation,
             location_idx_t::invalid(),
             s->timezone_.empty() ? timezone_idx_t::invalid()
