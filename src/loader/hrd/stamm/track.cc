@@ -47,7 +47,7 @@ tracks parse_track_rules(config const& c,
           auto l = location{tt, parent};
           auto const id = fmt::format("T:{}:{}", l.id_, track_name_str);
           l.id_ = id;
-          l.name_.set_non_owning(track_name_str);
+          l.name_ = track_name_str;
           l.type_ = location_type::kGeneratedTrack;
           l.parent_ = parent;
           auto const child = tt.locations_.register_location(l);
