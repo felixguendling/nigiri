@@ -4,6 +4,7 @@
 #include "nigiri/rt/rt_timetable.h"
 #include "nigiri/special_stations.h"
 #include "utl/enumerate.h"
+#include "utl/equal_ranges_linear.h"
 #include "utl/get_or_create.h"
 #include "utl/overloaded.h"
 
@@ -18,6 +19,53 @@ void trace_start(char const* fmt_str, Args... args) {
   }
 }
 
+using offset_t = std::variant<duration_t, std::span<td_footpath const>>;
+
+duration_t get_min(offset_t const o) {
+  return std::visit(utl::overloaded{[](duration_t const x) { return x; },
+                                    [&](std::span<td_footpath const> td) {
+                                      return std::min_element(
+                                                 begin(td), end(td),
+                                                 [](auto&& a, auto&& b) {
+                                                   return a.duration_ <
+                                                          b.duration_;
+                                                 })
+                                          ->duration_;
+                                    }},
+                    o);
+}
+
+duration_t get_max(offset_t const o) {
+  return std::visit(utl::overloaded{[](duration_t const x) { return x; },
+                                    [&](std::span<td_footpath const> td) {
+                                      return std::max_element(
+                                                 begin(td), end(td),
+                                                 [](auto&& a, auto&& b) {
+                                                   return a.duration_ <
+                                                          b.duration_;
+                                                 })
+                                          ->duration_;
+                                    }},
+                    o);
+}
+
+duration_t get_offset(direction const search_dir,
+                      offset_t const o,
+                      unixtime_t const t) {
+  return std::visit(utl::overloaded{[](duration_t const x) { return x; },
+                                    [&](std::span<td_footpath const> td) {
+                                      auto duration = kInfeasible;
+                                      for_each_footpath(
+                                          search_dir, td, t,
+                                          [&](footpath const fp) {
+                                            duration = fp.duration();
+                                            return utl::cflow::kBreak;
+                                          });
+                                      return duration;
+                                    }},
+                    o);
+}
+
 void add_start_times_at_stop(direction const search_dir,
                              timetable const& tt,
                              rt_timetable const* rtt,
@@ -25,7 +73,7 @@ void add_start_times_at_stop(direction const search_dir,
                              stop_idx_t const stop_idx,
                              location_idx_t const location_idx,
                              interval<unixtime_t> const& interval_with_offset,
-                             duration_t const offset,
+                             offset_t const offset,
                              std::vector<start>& starts) {
   auto const first_day_idx = tt.day_idx_mam(interval_with_offset.from_).first;
   auto const last_day_idx = tt.day_idx_mam(interval_with_offset.to_).first;
@@ -56,10 +104,17 @@ void add_start_times_at_stop(direction const search_dir,
       if (traffic_days.test(to_idx(day - day_offset)) &&
           interval_with_offset.contains(tt.to_unixtime(day, stop_time_mam))) {
         auto const ev_time = tt.to_unixtime(day, stop_time_mam);
+        auto const duration = get_offset(search_dir, offset, ev_time);
+        if (duration == kInfeasible) {
+          trace_start(
+              "        => ADD START: infeasible, time_at_stop={}, stop={}\n",
+              ev_time, location{tt, starts.back().stop_});
+          continue;
+        }
         auto const& s = starts.emplace_back(
             start{.time_at_start_ = search_dir == direction::kForward
-                                        ? ev_time - offset
-                                        : ev_time + offset,
+                                        ? ev_time - duration
+                                        : ev_time + duration,
                   .time_at_stop_ = ev_time,
                   .stop_ = location_idx});
         trace_start(
@@ -84,15 +139,15 @@ void add_start_times_at_stop(direction const search_dir,
 void add_starts_in_interval(direction const search_dir,
                             timetable const& tt,
                             rt_timetable const* rtt,
-                            interval<unixtime_t> const& interval,
+                            interval<unixtime_t> const& iv,
                             location_idx_t const l,
-                            duration_t const d,
+                            offset_t const d,
                             std::vector<start>& starts,
                             bool const add_ontrip) {
   trace_start(
       "    add_starts_in_interval(interval={}, stop={}, duration={}): {} "
       "routes\n",
-      interval, location{tt, l},  // NOLINT(clang-analyzer-core.CallAndMessage)
+      iv, location{tt, l},  // NOLINT(clang-analyzer-core.CallAndMessage)
       d, tt.location_routes_.at(l).size());
 
   // Iterate routes visiting the location.
@@ -110,8 +165,8 @@ void add_starts_in_interval(direction const search_dir,
       // Ignore:
       // - in-allowed=false for forward search
       // - out-allowed=false for backward search
-      // - entering at last stp for forward search
-      // - exiting at first stp for backward search
+      // - entering at last stop for forward search
+      // - exiting at first stop for backward search
       if ((search_dir == direction::kBackward &&
            (i == 0U || !stp.out_allowed())) ||
           (search_dir == direction::kForward &&
@@ -122,11 +177,15 @@ void add_starts_in_interval(direction const search_dir,
       }
 
       trace_start("    -> no skip -> add_start_times_at_stop()\n");
-      add_start_times_at_stop(
-          search_dir, tt, rtt, r, static_cast<stop_idx_t>(i),
-          stop{s}.location_idx(),
-          search_dir == direction::kForward ? interval + d : interval - d, d,
-          starts);
+      auto const min = get_min(d);
+      auto const max = get_max(d);
+      add_start_times_at_stop(search_dir, tt, rtt, r,
+                              static_cast<stop_idx_t>(i),
+                              stop{s}.location_idx(),
+                              search_dir == direction::kForward
+                                  ? interval{iv.from_ + min, iv.to_ + max}
+                                  : interval{iv.from_ - max, iv.to_ - min},
+                              d, starts);
     }
   }
 
@@ -153,11 +212,19 @@ void add_starts_in_interval(direction const search_dir,
             rt_t, static_cast<stop_idx_t>(i),
             (search_dir == direction::kForward ? event_type::kDep
                                                : event_type::kArr));
-        auto const& inserted = starts.emplace_back(start{
-            .time_at_start_ =
-                search_dir == direction::kForward ? ev_time - d : ev_time + d,
-            .time_at_stop_ = ev_time,
-            .stop_ = l});
+        auto const duration = get_offset(search_dir, d, ev_time);
+        if (duration == kInfeasible) {
+          trace_start(
+              "        => ADD START: infeasible, time_at_stop={}, stop={}\n",
+              ev_time, location{tt, starts.back().stop_});
+          continue;
+        }
+        auto const& inserted = starts.emplace_back(
+            start{.time_at_start_ = search_dir == direction::kForward
+                                        ? ev_time - duration
+                                        : ev_time + duration,
+                  .time_at_stop_ = ev_time,
+                  .stop_ = l});
         trace_start(
             "        => ADD RT START: time_at_start={}, time_at_stop={}, "
             "stop={}\n",
@@ -173,27 +240,25 @@ void add_starts_in_interval(direction const search_dir,
   // departs later and arrives at the same time). These journeys outside the
   // interval will be filtered out before returning the result.
   if (add_ontrip) {
+    auto const time_at_start =
+        search_dir == direction::kForward ? iv.to_ : iv.from_ - 1_minutes;
+    auto const duration = get_offset(search_dir, d, time_at_start);
     starts.emplace_back(
-        start{.time_at_start_ = search_dir == direction::kForward
-                                    ? interval.to_
-                                    : interval.from_ - 1_minutes,
+        start{.time_at_start_ = time_at_start,
               .time_at_stop_ = search_dir == direction::kForward
-                                   ? interval.to_ + d
-                                   : interval.from_ - 1_minutes - d,
+                                   ? iv.to_ + duration
+                                   : iv.from_ - 1_minutes - duration,
               .stop_ = l});
   }
 }
 
-void get_starts(direction const search_dir,
-                timetable const& tt,
+void get_starts(timetable const& tt,
                 rt_timetable const* rtt,
+                direction const search_dir,
+                query const& q,
                 start_time_t const& start_time,
-                std::vector<offset> const& station_offsets,
-                location_match_mode const mode,
-                bool const use_start_footpaths,
-                std::vector<start>& starts,
-                bool const add_ontrip,
-                profile_idx_t const prf_idx) {
+                bool add_ontrip,
+                std::vector<start>& starts) {
   hash_map<location_idx_t, duration_t> shortest_start;
 
   auto const update = [&](location_idx_t const l, duration_t const d) {
@@ -202,22 +267,22 @@ void get_starts(direction const search_dir,
   };
 
   auto const fwd = search_dir == direction::kForward;
-  for (auto const& o : station_offsets) {
-    for_each_meta(tt, mode, o.target(), [&](location_idx_t const l) {
-      update(l, o.duration());
-      if (use_start_footpaths) {
-        auto const footpaths = fwd ? tt.locations_.footpaths_out_[prf_idx][l]
-                                   : tt.locations_.footpaths_in_[prf_idx][l];
-        for (auto const& fp : footpaths) {
-          update(fp.target(), o.duration() + fp.duration());
-        }
-      }
-    });
+  for (auto const& o : q.start_) {
+    for_each_meta(tt, q.start_match_mode_, o.target(),
+                  [&](location_idx_t const l) {
+                    update(l, o.duration());
+                    if (q.use_start_footpaths_) {
+                      auto const footpaths =
+                          fwd ? tt.locations_.footpaths_out_[q.prf_idx_][l]
+                              : tt.locations_.footpaths_in_[q.prf_idx_][l];
+                      for (auto const& fp : footpaths) {
+                        update(fp.target(), o.duration() + fp.duration());
+                      }
+                    }
+                  });
   }
 
-  for (auto const& s : shortest_start) {
-    auto const l = s.first;
-    auto const o = s.second;
+  for (auto const& [l, o] : shortest_start) {
     std::visit(utl::overloaded{[&](interval<unixtime_t> const interval) {
                                  add_starts_in_interval(search_dir, tt, rtt,
                                                         interval, l, o, starts,
@@ -231,6 +296,29 @@ void get_starts(direction const search_dir,
                                }},
                start_time);
   }
+
+  utl::equal_ranges_linear(
+      q.td_start_,
+      [](td_footpath const& a, td_footpath const& b) {
+        return a.target_ < b.target_;
+      },
+      [&](auto&& from_it, auto&& to_it) {
+        auto const offset = offset_t{std::span{from_it, to_it}};
+        std::visit(
+            utl::overloaded{[&](interval<unixtime_t> const interval) {
+                              add_starts_in_interval(
+                                  search_dir, tt, rtt, interval,
+                                  from_it->target_, offset, starts, add_ontrip);
+                            },
+                            [&](unixtime_t const t) {
+                              auto const o = get_offset(search_dir, offset, t);
+                              starts.emplace_back(
+                                  start{.time_at_start_ = t,
+                                        .time_at_stop_ = fwd ? t + o : t - o,
+                                        .stop_ = from_it->target_});
+                            }},
+            start_time);
+      });
 }
 
 void collect_destinations(timetable const& tt,

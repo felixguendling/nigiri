@@ -274,13 +274,14 @@ TEST(routing, start_times) {
   auto const B = tt.locations_.location_id_to_idx_.at(
       location_id{.id_ = "0000002", .src_ = src});
   auto starts = std::vector<start>{};
-  get_starts(direction::kForward, tt, nullptr,
-             interval<unixtime_t>{sys_days{2020_y / March / 30},
-                                  sys_days{2020_y / March / 31}},
-             {{A, 15_minutes, 0}, {B, 30_minutes, 0}},
-             location_match_mode::kExact, false, starts, true, 0);
-  std::sort(begin(starts), end(starts),
-            [](auto&& a, auto&& b) { return a > b; });
+  auto const q =
+      query{.start_time_ = interval<unixtime_t>{sys_days{2020_y / March / 30},
+                                                sys_days{2020_y / March / 31}},
+            .start_match_mode_ = location_match_mode::kExact,
+            .use_start_footpaths_ = false,
+            .start_ = {{A, 15_minutes, 0}, {B, 30_minutes, 0}}};
+  get_starts(tt, nullptr, direction::kForward, q, q.start_time_, true, starts);
+  utl::sort(starts, [](auto&& a, auto&& b) { return a > b; });
   starts.erase(std::unique(begin(starts), end(starts)), end(starts));
 
   std::stringstream ss;
